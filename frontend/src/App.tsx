@@ -24,6 +24,7 @@ const defaultPrompt =
 export function App() {
   const [hasBootstrapped, setHasBootstrapped] = useState(false);
   const [prompt, setPrompt] = useState(defaultPrompt);
+  const [images, setImages] = useState<string[]>([]);
   const [language, setLanguage] = useState("python");
   const [templates, setTemplates] = useState<Template[]>([]);
   const [health, setHealth] = useState<HealthInfo | null>(null);
@@ -54,8 +55,10 @@ export function App() {
 
   // Execute pipeline
   async function handleExecute() {
-    if (prompt.trim().length < 8) {
-      setError("Please provide a problem description or code snippet of at least 8 characters.");
+    const hasPrompt = prompt.trim().length >= 8;
+    const hasImages = images.length > 0;
+    if (!hasPrompt && !hasImages) {
+      setError("Please provide a problem prompt, code snippet, or attach an image/screenshot.");
       return;
     }
     setError("");
@@ -63,10 +66,11 @@ export function App() {
     setIsStarting(true);
     try {
       const created = await createRun({
-        prompt,
+        prompt: prompt.trim() || "Analyze the attached image/screenshot (LeetCode problem, code, or error message) and provide the correct solution, explanation, and error diagnosis.",
         language,
         max_iterations: 3,
         run_tests: true,
+        images,
       });
       const initialRecord = await fetchRun(created.id);
       setRun(initialRecord);
@@ -81,6 +85,7 @@ export function App() {
   function handleReset() {
     setRun(null);
     setError("");
+    setImages([]);
   }
 
   // Keyboard shortcut: Ctrl+Enter / Cmd+Enter
@@ -93,7 +98,7 @@ export function App() {
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [prompt, isStarting, run?.status]);
+  }, [prompt, images, isStarting, run?.status]);
 
   const result = run?.result;
   const phase = run?.phase || "queued";
@@ -156,6 +161,8 @@ export function App() {
             <PromptEditor
               prompt={prompt}
               setPrompt={setPrompt}
+              images={images}
+              setImages={setImages}
               templates={templates}
               language={language}
               setLanguage={setLanguage}

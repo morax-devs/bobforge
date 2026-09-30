@@ -20,7 +20,7 @@ export async function fetchTemplates(): Promise<Template[]> {
   return (await parse<{ templates: Template[] }>(response)).templates;
 }
 
-export async function createRun(payload: { prompt: string; language: string; max_iterations: number; run_tests: boolean }) {
+export async function createRun(payload: { prompt: string; language: string; max_iterations: number; run_tests: boolean; images?: string[] }) {
   const response = await fetch(`${API_BASE}/runs`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
   return parse<{ id: string; status: string }>(response);
 }

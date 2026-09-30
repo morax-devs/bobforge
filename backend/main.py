@@ -22,10 +22,11 @@ except (ImportError, ValueError):
 
 
 class RunRequest(BaseModel):
-    prompt: str = Field(min_length=8, max_length=50000)
+    prompt: str = Field(default="", max_length=50000)
     language: str = Field(default="python")
     max_iterations: int = Field(default=3, ge=1, le=5)
     run_tests: bool = True
+    images: list[str] = Field(default_factory=list)
 
 
 class RunRecord(dict[str, Any]):
@@ -67,7 +68,15 @@ async def _execute(run_id: str, request: RunRequest) -> None:
             RUNS[run_id]["status"] = "running"
             RUNS[run_id]["phase"] = "builder"
             RUNS[run_id]["updated_at"] = _now()
-        result = await asyncio.to_thread(run_workflow, request.prompt, norm_lang, request.max_iterations, request.run_tests, lambda event: _event_hook(run_id, event))
+        result = await asyncio.to_thread(
+            run_workflow,
+            request.prompt,
+            norm_lang,
+            request.max_iterations,
+            request.run_tests,
+            lambda event: _event_hook(run_id, event),
+            request.images,
+        )
         with RUNS_LOCK:
             RUNS[run_id].update({"status": "completed", "phase": "complete", "result": result, "events": result.get("events", RUNS[run_id].get("events", [])), "updated_at": _now()})
     except Exception as exc:  # pragma: no cover - defensive API boundary
@@ -107,11 +116,31 @@ async def templates() -> dict[str, Any]:
 
 @app.post("/api/runs", status_code=202)
 async def create_run(request: RunRequest) -> dict[str, Any]:
+    effective_prompt = request.prompt.strip()
+    if not effective_prompt and not request.images:
+        raise HTTPException(
+            status_code=422,
+            detail="Please provide a problem prompt, your code/error, or attach an image/screenshot.",
+        )
+    if not effective_prompt:
+        effective_prompt = "Please analyze the attached image/screenshot (LeetCode problem, code, or error message) and provide the correct solution, explanation, and error diagnosis."
+    request.prompt = effective_prompt
+
     run_id = f"run_{uuid.uuid4().hex[:8]}"
     now = _now()
     norm_lang = _normalize_lang(request.language)
     with RUNS_LOCK:
-        RUNS[run_id] = RunRecord({"id": run_id, "status": "queued", "phase": "queued", "prompt": request.prompt, "language": norm_lang, "created_at": now, "updated_at": now, "events": []})
+        RUNS[run_id] = RunRecord({
+            "id": run_id,
+            "status": "queued",
+            "phase": "queued",
+            "prompt": effective_prompt,
+            "language": norm_lang,
+            "images": request.images,
+            "created_at": now,
+            "updated_at": now,
+            "events": [],
+        })
     asyncio.create_task(_execute(run_id, request))
     return {"id": run_id, "status": "queued"}
 

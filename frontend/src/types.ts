@@ -93,6 +93,7 @@ export type RunResult = {
   status: string;
   message: string;
   prompt: string;
+  images?: string[];
   language: string;
   code: string;
   tests: string;
@@ -118,6 +119,7 @@ export type RunRecord = {
   status: "queued" | "running" | "completed" | "error";
   phase: string;
   prompt: string;
+  images?: string[];
   created_at: string;
   updated_at: string;
   events: EventItem[];

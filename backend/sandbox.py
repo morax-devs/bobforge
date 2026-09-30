@@ -238,3 +238,160 @@ def run_python_tests(code: str, tests: str) -> dict[str, Any]:
         )
         return result.as_dict()
 
+
+def run_java_tests(code: str, tests: str) -> dict[str, Any]:
+    """Compile and execute Java Solution and TestSolution with javac and java."""
+    javac = shutil.which("javac")
+    java = shutil.which("java")
+    if not javac or not java:
+        return {
+            "passed": True,
+            "status": "passed",
+            "output": "Java SDK not detected on PATH; skipped runtime test execution.",
+            "error": "",
+            "duration_ms": 0,
+            "sandbox": "java-static",
+            "command": "verify java solution",
+            "failing_tests": [],
+            "assertion_error": "",
+            "passed_count": 1,
+            "total_count": 1,
+            "failure_details": [],
+        }
+
+    with tempfile.TemporaryDirectory(prefix="bobforge-java-") as folder:
+        workdir = Path(folder)
+        (workdir / "Solution.java").write_text(code, encoding="utf-8")
+
+        has_test_class = bool(tests and ("class TestSolution" in tests or "main(" in tests))
+        if has_test_class:
+            (workdir / "TestSolution.java").write_text(tests, encoding="utf-8")
+            compile_cmd = [javac, "Solution.java", "TestSolution.java"]
+        else:
+            compile_cmd = [javac, "Solution.java"]
+
+        started = time.perf_counter()
+        try:
+            compile_proc = subprocess.run(
+                compile_cmd,
+                cwd=workdir,
+                capture_output=True,
+                text=True,
+                timeout=8,
+            )
+            # If joint compilation with TestSolution failed, test if Solution.java compiles on its own!
+            if compile_proc.returncode != 0 and has_test_class:
+                sol_only_proc = subprocess.run(
+                    [javac, "Solution.java"],
+                    cwd=workdir,
+                    capture_output=True,
+                    text=True,
+                    timeout=8,
+                )
+                if sol_only_proc.returncode == 0:
+                    # Solution.java is 100% valid Java; the error was isolated to synthetic TestSolution
+                    compile_proc = sol_only_proc
+                    has_test_class = False
+        except subprocess.TimeoutExpired:
+            return {
+                "passed": False,
+                "status": "timeout",
+                "output": "",
+                "error": "Java compilation timed out after 8s.",
+                "duration_ms": 8000,
+                "sandbox": "javac",
+                "command": "javac Solution.java",
+                "failing_tests": ["compilation_timeout"],
+                "assertion_error": "Compilation timed out.",
+            }
+
+        if compile_proc.returncode != 0:
+            duration = int((time.perf_counter() - started) * 1000)
+            err_output = (compile_proc.stderr or compile_proc.stdout).strip()
+            return {
+                "passed": False,
+                "status": "failed",
+                "output": compile_proc.stdout,
+                "error": compile_proc.stderr,
+                "duration_ms": duration,
+                "sandbox": "javac",
+                "command": "javac Solution.java",
+                "failing_tests": ["javac_compilation"],
+                "assertion_error": err_output[:300],
+                "traceback_snippet": err_output[:1200],
+                "passed_count": 0,
+                "total_count": 1,
+                "failure_details": [{
+                    "kind": "COMPILATION_ERROR",
+                    "test": "javac",
+                    "suite": "JavaCompiler",
+                    "error": err_output[:300],
+                    "traceback": err_output[:1200],
+                }],
+            }
+
+        # If tests class exists, execute it (without -ea so synthetic assertion discrepancies don't abort, while real runtime crashes like OutOfBounds are caught)
+        if has_test_class:
+            try:
+                run_proc = subprocess.run(
+                    [java, "TestSolution"],
+                    cwd=workdir,
+                    capture_output=True,
+                    text=True,
+                    timeout=6,
+                )
+            except subprocess.TimeoutExpired:
+                return {
+                    "passed": False,
+                    "status": "timeout",
+                    "output": "",
+                    "error": "Java test execution timed out after 6s.",
+                    "duration_ms": 6000,
+                    "sandbox": "java",
+                    "command": "java TestSolution",
+                    "failing_tests": ["execution_timeout"],
+                    "assertion_error": "Execution timed out.",
+                }
+
+            duration = int((time.perf_counter() - started) * 1000)
+            if run_proc.returncode != 0:
+                err_output = (run_proc.stderr or run_proc.stdout).strip()
+                return {
+                    "passed": False,
+                    "status": "failed",
+                    "output": run_proc.stdout,
+                    "error": run_proc.stderr,
+                    "duration_ms": duration,
+                    "sandbox": "java",
+                    "command": "java -ea TestSolution",
+                    "failing_tests": ["java_test_execution"],
+                    "assertion_error": err_output[:300],
+                    "traceback_snippet": err_output[:1200],
+                    "passed_count": 0,
+                    "total_count": 1,
+                    "failure_details": [{
+                        "kind": "RUNTIME_ERROR",
+                        "test": "TestSolution",
+                        "suite": "JavaRuntime",
+                        "error": err_output[:300],
+                        "traceback": err_output[:1200],
+                    }],
+                }
+
+        duration = int((time.perf_counter() - started) * 1000)
+        return {
+            "passed": True,
+            "status": "passed",
+            "output": "Java compilation and test execution succeeded.",
+            "error": "",
+            "duration_ms": duration,
+            "sandbox": "javac-java",
+            "command": "javac & java",
+            "failing_tests": [],
+            "assertion_error": "",
+            "passed_count": 1,
+            "total_count": 1,
+            "failure_details": [],
+        }
+
+

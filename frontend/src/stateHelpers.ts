@@ -38,17 +38,17 @@ export function getWorkflowFailureInfo(
   }
 
   if (result) {
-    // If contract tests passed AND review is not blocking, the run shipped successfully!
-    // A transient generation error subsequently repaired by Fixer is not fatal.
-    const isPassing = (testResult ? testResult.passed : result.test_result?.passed) && !result.review?.blocking;
-
     // 1. Generation Provider Error / Unfulfilled Spec
-    if (
-      !isPassing &&
-      (result.generation_status === "provider_error" ||
-        result.challenge === "unfulfilled_specification" ||
-        result.generation_source === "failed")
-    ) {
+    // If the generation itself failed or generated a failure stub, it is ALWAYS a fatal failure.
+    const isFailedStub =
+      result.generation_status === "provider_error" ||
+      result.challenge === "unfulfilled_specification" ||
+      result.generation_source === "failed" ||
+      result.code.includes("// Generation Failed") ||
+      result.code.includes('"""Generation Failed') ||
+      result.code.includes("Generation failed:");
+
+    if (isFailedStub) {
       return {
         isFailure: true,
         type: "provider_error",
@@ -61,7 +61,7 @@ export function getWorkflowFailureInfo(
     }
 
     // 2. Offline Mode Unsupported
-    if (!isPassing && result.generation_status === "offline_unsupported") {
+    if (result.generation_status === "offline_unsupported") {
       return {
         isFailure: true,
         type: "offline_unsupported",
@@ -71,6 +71,10 @@ export function getWorkflowFailureInfo(
           "Offline mode only supports recognized benchmark tasks. An active LLM provider (Anthropic, IBM watsonx, OpenAI, Groq) is required for arbitrary tasks.",
       };
     }
+
+    // If contract tests passed AND review is not blocking, the run shipped successfully!
+    // A transient generation error subsequently repaired by Fixer is not fatal.
+    const isPassing = (testResult ? testResult.passed : result.test_result?.passed) && !result.review?.blocking;
 
     // 3. Semantic Review Failure
     if (
@@ -102,6 +106,9 @@ export function getWorkflowFailureInfo(
             result.message ||
             "Model provider unavailable or quota exhausted during repair.",
         };
+      }
+      if (result.message?.includes("Ready to ship") || result.message?.includes("Solution ready")) {
+        return null;
       }
       const isExhausted = (result.iterations || 0) >= (result.max_iterations || 3);
       return {
@@ -383,14 +390,21 @@ export function deriveLeetCodeStatus(
 ): LeetCodeStatusDisplay {
   if (failureInfo && failureInfo.isFailure) {
     let cleanMessage = failureInfo.message;
-    if (cleanMessage.includes("503") || cleanMessage.includes("unavailable")) {
-      cleanMessage = "Upstream model provider temporarily unavailable. Please retry in a moment.";
-    } else if (cleanMessage.includes("quota") || cleanMessage.includes("credit")) {
-      cleanMessage = "API quota reached or credits depleted. Check provider credentials.";
+    if (failureInfo.type === "provider_error" || failureInfo.type === "offline_unsupported") {
+      if (cleanMessage.includes("503") || cleanMessage.includes("unavailable")) {
+        cleanMessage = "Upstream model provider temporarily unavailable. Please retry in a moment.";
+      } else if (cleanMessage.includes("quota") || cleanMessage.includes("credit")) {
+        cleanMessage = "API quota reached or credits depleted. Check provider credentials.";
+      }
+      return {
+        state: "error",
+        title: "Unable to generate solution",
+        subtitle: cleanMessage,
+      };
     }
     return {
       state: "error",
-      title: "Unable to generate solution",
+      title: failureInfo.title || "Code issue detected",
       subtitle: cleanMessage,
     };
   }
@@ -482,6 +496,31 @@ export function deriveLeetCodeStatus(
 }
 
 export function parseExplanation(result?: RunResult, prompt?: string): ExplanationInfo {
+  // If generation failed or generated a failure stub, provide an honest diagnostic card
+  if (
+    result?.generation_status === "provider_error" ||
+    result?.generation_source === "failed" ||
+    result?.challenge === "unfulfilled_specification" ||
+    result?.code?.includes("// Generation Failed") ||
+    result?.code?.includes('"""Generation Failed') ||
+    result?.code?.includes("Generation failed:")
+  ) {
+    const errorMsg = result?.provider_warning || result?.message || "Model provider credentials failed or quota was reached.";
+    return {
+      intent: "provider_error",
+      approach: "Model Generation Halted",
+      logic: `The AI model provider (${result?.provider || "unknown"}) was unable to complete code generation: ${errorMsg}`,
+      why_it_works: "To fix this, check the GEMINI_API_KEY in your .env file, or configure another provider such as Groq (GROQ_API_KEY) or OpenAI (OPENAI_API_KEY).",
+      complexity: {
+        time: "N/A",
+        space: "N/A",
+      },
+      what_was_wrong: errorMsg,
+      what_changed: "No code could be generated because the AI model provider credentials failed or quota was reached.",
+      notes: "Verify your API key in .env at the root of the project.",
+    };
+  }
+
   const exp = result?.explanation;
   const lowPrompt = (prompt || result?.prompt || "").toLowerCase();
 

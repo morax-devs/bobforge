@@ -1358,18 +1358,33 @@ You MUST generate the entire solution in Java.
 Under NO CIRCUMSTANCES should you default to or output Python when Java is requested!
 
 Strict LeetCode Java Standards:
-- Use `class Solution` with public method signature:
-  ```java
-  import java.util.*;
+- Method Signatures & Types MUST strictly adhere to standard LeetCode Java conventions:
+  * 2D Matrix / Grid of characters (e.g. matrix, grid, board of characters): ALWAYS use `char[][] grid` or `char[][] board` (NEVER `List<List<Character>>`). Access dimensions with `grid.length` and `grid[0].length`, and characters with `grid[r][c]`.
+  * 2D Matrix / Grid of numbers: ALWAYS use `int[][] grid` or `int[][] matrix` (NEVER `List<List<Integer>>`).
+  * 1D Array of numbers: ALWAYS use `int[] nums` or `long[] nums` (NEVER `List<Integer>` unless explicitly requested).
+  * 1D Array of characters: ALWAYS use `char[] s` or `char[] chars`.
+  * Strings: ALWAYS use `String s`.
+  * Trees: `TreeNode root`.
+  * Linked Lists: `ListNode head`.
+  * Use `class Solution` with public method signature:
+    ```java
+    import java.util.*;
 
-  class Solution {
-      public int[] twoSum(int[] nums, int target) {
-          ...
-      }
-  }
-  ```
+    class Solution {
+        public boolean hasValidPath(char[][] grid) {
+            ...
+        }
+    }
+    ```
+- Java Type Safety & Compilation Rules:
+  * NEVER use generic array creation like `new Set[m][n]` or `new HashSet<Integer>[m][n]`. Java does NOT permit generic array creation and it will fail to compile. For 2D/3D state spaces or DP, use multi-dimensional primitive arrays (e.g. `boolean[][][] visited = new boolean[m][n][k];`) or arrays of primitives (`int[][] dp`).
+  * Array Bounds & State Safety: Whenever indexing memoization or state arrays (e.g. `visited[r][c][open]`), ALWAYS prune both upper and lower bounds: `if (open < 0 || open > maxOpen) return false;` BEFORE indexing `visited[r][c][open]` to prevent `ArrayIndexOutOfBoundsException`.
+  * Write clean, standard recursion: `dfs(r + 1, c, ...)` and `dfs(r, c + 1, ...)`. NEVER write malformed ternary expressions in recursion arguments.
+  * Enhanced for-loops MUST have explicit variable types: `for (int val : set)`, NEVER `for (val : set)`.
+- Java Verification Test Suite (`tests`):
+  * Generate a standalone executable test class `public class TestSolution { public static void main(String[] args) { ... } }` with assertion checks on normal and edge test cases.
 - When a specific class is requested (e.g. `LRUCache`, `RateLimiter`), define that class directly (e.g. `class LRUCache { ... }`).
-- Do NOT generate `public static void main(...)`, `Scanner` input handling, or standalone console application code.
+- Do NOT generate `public static void main(...)` inside `class Solution`, `Scanner` input handling, or standalone console application code.
 - Use standard Java syntax, standard library collections, and types (e.g., `import java.util.*;`, `int[]`, `List<Integer>`, `Map<Integer, Integer>`, `HashMap`, `Queue<...>`, `LinkedList`, `ArrayList`)."""
     elif lang == "cpp":
         lang_instructions = """CRITICAL PROGRAMMING LANGUAGE REQUIREMENT:
@@ -1465,7 +1480,20 @@ Strict Engineering & LeetCode Standards:
 BUILDER_SYSTEM_PROMPT = get_builder_system_prompt("python")
 
 
-def build_code(prompt: str, language: str = "python") -> dict[str, Any]:
+def _strip_code_literals(code: str) -> str:
+    """Strip comments, string literals, and character literals before counting structural tokens."""
+    # Strip line comments
+    clean = re.sub(r"//.*", "", code)
+    # Strip block comments
+    clean = re.sub(r"/\*[\s\S]*?\*/", "", clean)
+    # Strip string literals "..."
+    clean = re.sub(r'"(?:\\.|[^"\\])*"', '""', clean)
+    # Strip character literals '...'
+    clean = re.sub(r"'(?:\\.|[^'\\])*'", "''", clean)
+    return clean
+
+
+def build_code(prompt: str, language: str = "python", images: list[str] | None = None) -> dict[str, Any]:
     """Generate LeetCode-ready code, verification tests, and educational explanation dynamically."""
     lang = _normalize_lang(language)
     lang_name = "Java" if lang == "java" else "C++" if lang == "cpp" else "Python"
@@ -1484,9 +1512,11 @@ Target Files:
 - {code_filename} (complete LeetCode-ready {lang_name} implementation)
 - {test_filename} (verification test suite in {lang_name})
 """
+    if images:
+        user_request += f"\n\nNote: {len(images)} screenshot(s) or problem diagram image(s) have been attached to this request. Analyze the image(s) thoroughly to extract problem tables, graphical constraints, code snippets, or error tracebacks."
 
     system_prompt = get_builder_system_prompt(lang)
-    gen_res = CLIENT.generate_json(user_request, system=system_prompt, temperature=0.1)
+    gen_res = CLIENT.generate_json(user_request, system=system_prompt, temperature=0.1, images=images)
 
     # 1. Active LLM generation succeeded
     if gen_res.status in ("success", "fallback_success") and gen_res.data:
@@ -1523,7 +1553,8 @@ Target Files:
                     is_valid = False
             else:
                 has_content = bool(extracted_code.strip())
-                balanced_braces = extracted_code.count("{") == extracted_code.count("}")
+                clean_extracted = _strip_code_literals(extracted_code)
+                balanced_braces = clean_extracted.count("{") == clean_extracted.count("}")
                 not_python = "def " not in extracted_code and "class Solution:" not in extracted_code
                 is_valid = has_content and balanced_braces and not_python
 
@@ -1675,9 +1706,12 @@ You evaluate:
    - Does the implementation provide the actual domain functionality, algorithms, data structures, or application components requested?
    - Is the code a generic placeholder, stub, or trivial no-op? If so, REJECT it.
    - Does the API and public interface match what was specified (e.g. standard LeetCode class Solution)?
+   - For Java LeetCode: Verify parameter types follow LeetCode standards (e.g. 2D character grids MUST be `char[][] grid`, NOT `List<List<Character>>`; 2D integer grids MUST be `int[][] grid`, NOT `List<List<Integer>>`; 1D arrays MUST be `int[] nums`, NOT `List<Integer>`). If generic lists are used for LeetCode arrays/matrices, REJECT with a finding.
    - Do the tests meaningfully verify the requested requirements rather than trivial assertions?
 2. Code Correctness, Safety & Boundaries:
    - Are there subtle logic bugs, off-by-one errors, missing edge cases, or type contract violations?
+   - For Java/C++: Check that all array indexing operations (e.g. `visited[r][c][open]`) are strictly bound-checked before access (`open >= 0 && open <= maxOpen`), and reject solutions with potential `ArrayIndexOutOfBoundsException` or malformed recursion expressions.
+   - For Java: Check that there are NO invalid generic array instantiations (e.g. `new Set[m][n]`, `new HashSet[m][n]`) and that enhanced for-loops declare the variable type explicitly.
 
 Return RAW JSON only with this schema:
 {{
@@ -1792,6 +1826,7 @@ def review_code(
                             })
     else:
         # Layer 1: Structural checks (Java / C++)
+        clean_code = _strip_code_literals(code)
         if not code or not code.strip():
             findings.append({
                 "category": "placeholder_code",
@@ -1803,15 +1838,15 @@ def review_code(
                 "evidence": "Empty string",
                 "fix": f"Generate a complete LeetCode class Solution in {lang_name}.",
             })
-        elif code.count("{") != code.count("}") or code.count("(") != code.count(")"):
+        elif clean_code.count("{") != clean_code.count("}") or clean_code.count("(") != clean_code.count(")"):
             findings.append({
                 "category": "syntax_error",
                 "severity": "critical",
                 "line": 1,
                 "title": f"Mismatched braces or parentheses in {lang_name}",
                 "message": f"{lang_name} code contains unbalanced braces or parentheses.",
-                "detail": f"Braces {{}}: {code.count('{')} vs {code.count('}')}, Parentheses (): {code.count('(')} vs {code.count(')')}",
-                "evidence": f"Open braces: {code.count('{')}, close braces: {code.count('}')}",
+                "detail": f"Braces {{}}: {clean_code.count('{')} vs {clean_code.count('}')}, Parentheses (): {clean_code.count('(')} vs {clean_code.count(')')}",
+                "evidence": f"Open braces: {clean_code.count('{')}, close braces: {clean_code.count('}')}",
                 "fix": f"Ensure all braces and parentheses are properly balanced in {lang_name}.",
             })
         elif "def " in code or "class Solution:" in code:
@@ -2023,8 +2058,10 @@ Strict Engineering Standards:
    - Diagnose the actual failure from the provided traceback, assertion errors, stdout/stderr, and review findings.
    - Fix the underlying architectural, logic, semantic, or boundary defect. NEVER use superficial hacks or hardcoded values tailored to a single test case.
    - Fulfill all requirements from the user specification.
-3. Code Preservation:
+3. Code Preservation & LeetCode Standards:
    - Preserve existing public function/class signatures, docstrings/comments, and valid domain logic.
+   - For Java LeetCode: Parameter types must strictly match standard LeetCode conventions (e.g. `char[][] grid` for 2D character grids, `int[][] grid` for 2D integer grids, `int[] nums` for arrays). Never use `List<List<...>>` for 2D grids unless explicitly requested.
+   - For Java: NEVER use generic array creation like `new Set[m][n]`. Use primitive multi-dimensional arrays or collections.
    - Preserve standard LeetCode class Solution format.
    - Maintain the target language ({lang_name}). NEVER output Python when {lang_name} is required.
 4. Test Integrity:
@@ -2050,9 +2087,10 @@ def _is_valid_repair_code(code_str: str, test_str: str | None, lang: str) -> boo
             return False
     else:
         # Java or C++
-        if code_str.count("{") != code_str.count("}"):
+        clean_code = _strip_code_literals(code_str)
+        if clean_code.count("{") != clean_code.count("}"):
             return False
-        if code_str.count("(") != code_str.count(")"):
+        if clean_code.count("(") != clean_code.count(")"):
             return False
         if "def " in code_str or "class Solution:" in code_str:
             return False

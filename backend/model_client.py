@@ -312,7 +312,15 @@ def extract_json(text: str) -> dict[str, Any] | None:
         except (json.JSONDecodeError, ValueError):
             pass
 
-    return None
+def parse_image_data(img_str: str) -> tuple[str, str]:
+    """Parse image data URL or raw base64 into (mime_type, base64_data)."""
+    if not img_str:
+        return "image/png", ""
+    if img_str.startswith("data:") and ";base64," in img_str:
+        prefix, b64_data = img_str.split(";base64,", 1)
+        mime_type = prefix.replace("data:", "").strip() or "image/png"
+        return mime_type, b64_data.strip()
+    return "image/png", img_str.strip()
 
 
 # ==============================================================================
@@ -328,12 +336,14 @@ class BaseLLMProvider:
         raise NotImplementedError
 
     def generate_with_error(
-        self, prompt: str, system: str = "", temperature: float = 0.1
+        self, prompt: str, system: str = "", temperature: float = 0.1, images: list[str] | None = None
     ) -> tuple[str | None, ProviderError | None]:
         raise NotImplementedError
 
-    def generate(self, prompt: str, system: str = "", temperature: float = 0.1) -> str | None:
-        text, _ = self.generate_with_error(prompt, system, temperature)
+    def generate(
+        self, prompt: str, system: str = "", temperature: float = 0.1, images: list[str] | None = None
+    ) -> str | None:
+        text, _ = self.generate_with_error(prompt, system, temperature, images=images)
         return text
 
     def get_info(self) -> dict[str, Any]:
@@ -355,7 +365,7 @@ class AnthropicProvider(BaseLLMProvider):
         return bool(self.api_key)
 
     def generate_with_error(
-        self, prompt: str, system: str = "", temperature: float = 0.1
+        self, prompt: str, system: str = "", temperature: float = 0.1, images: list[str] | None = None
     ) -> tuple[str | None, ProviderError | None]:
         if not self.is_available():
             err = ProviderError(
@@ -370,11 +380,27 @@ class AnthropicProvider(BaseLLMProvider):
             self.last_error_detail = err
             return None, err
 
+        content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+        if images:
+            for img in images:
+                if not img or not isinstance(img, str):
+                    continue
+                mime_type, b64_data = parse_image_data(img)
+                if b64_data:
+                    content.append({
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": mime_type,
+                            "data": b64_data,
+                        },
+                    })
+
         payload: dict[str, Any] = {
             "model": self.model,
             "max_tokens": 4096,
             "temperature": temperature,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": [{"role": "user", "content": content}],
         }
         if system:
             payload["system"] = system
@@ -479,7 +505,7 @@ class IBMWatsonxProvider(BaseLLMProvider):
             return None, prov_err
 
     def generate_with_error(
-        self, prompt: str, system: str = "", temperature: float = 0.1
+        self, prompt: str, system: str = "", temperature: float = 0.1, images: list[str] | None = None
     ) -> tuple[str | None, ProviderError | None]:
         if not self.is_available():
             err = ProviderError(
@@ -499,7 +525,10 @@ class IBMWatsonxProvider(BaseLLMProvider):
             return None, auth_err
 
         endpoint = f"{self.base_url}/ml/v1/text/generation?version=2023-05-29"
-        input_text = f"<|system|>\n{system}\n<|user|>\n{prompt}\n<|assistant|>\n" if system else prompt
+        effective_prompt = prompt
+        if images:
+            effective_prompt += f"\n\n[Note: User attached {len(images)} image(s)/screenshot(s). Analyze code/problem context accordingly.]"
+        input_text = f"<|system|>\n{system}\n<|user|>\n{effective_prompt}\n<|assistant|>\n" if system else effective_prompt
 
         payload = {
             "input": input_text,
@@ -581,7 +610,7 @@ class OpenAICompatibleProvider(BaseLLMProvider):
         return bool(self.base_url)
 
     def generate_with_error(
-        self, prompt: str, system: str = "", temperature: float = 0.1
+        self, prompt: str, system: str = "", temperature: float = 0.1, images: list[str] | None = None
     ) -> tuple[str | None, ProviderError | None]:
         if self.requires_key and not self.api_key:
             err = ProviderError(
@@ -596,10 +625,22 @@ class OpenAICompatibleProvider(BaseLLMProvider):
             self.last_error_detail = err
             return None, err
 
-        messages: list[dict[str, str]] = []
+        content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+        if images:
+            for img in images:
+                if not img or not isinstance(img, str):
+                    continue
+                mime_type, b64_data = parse_image_data(img)
+                if b64_data:
+                    content.append({
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{mime_type};base64,{b64_data}"},
+                    })
+
+        messages: list[dict[str, Any]] = []
         if system:
             messages.append({"role": "system", "content": system})
-        messages.append({"role": "user", "content": prompt})
+        messages.append({"role": "user", "content": content if images else prompt})
 
         payload = {
             "model": self.model,
@@ -661,7 +702,7 @@ class GeminiProvider(BaseLLMProvider):
         return bool(self.api_key)
 
     def generate_with_error(
-        self, prompt: str, system: str = "", temperature: float = 0.1
+        self, prompt: str, system: str = "", temperature: float = 0.1, images: list[str] | None = None
     ) -> tuple[str | None, ProviderError | None]:
         if not self.api_key:
             err = ProviderError(
@@ -684,10 +725,24 @@ class GeminiProvider(BaseLLMProvider):
         last_prov_err: ProviderError | None = None
         secrets = [self.api_key]
 
+        parts: list[dict[str, Any]] = [{"text": prompt}]
+        if images:
+            for img in images:
+                if not img or not isinstance(img, str):
+                    continue
+                mime_type, b64_data = parse_image_data(img)
+                if b64_data:
+                    parts.append({
+                        "inline_data": {
+                            "mime_type": mime_type,
+                            "data": b64_data,
+                        }
+                    })
+
         for mod in candidate_models:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{mod}:generateContent?key={self.api_key}"
             payload: dict[str, Any] = {
-                "contents": [{"parts": [{"text": prompt}]}],
+                "contents": [{"parts": parts}],
                 "generationConfig": {
                     "temperature": temperature,
                 },
@@ -840,7 +895,7 @@ class UniversalModelClient:
         return chain
 
     def generate(
-        self, prompt: str, system: str = "", temperature: float = 0.1
+        self, prompt: str, system: str = "", temperature: float = 0.1, images: list[str] | None = None
     ) -> GenerationResult:
         """Try available providers in priority order, returning a structured GenerationResult."""
         chain = self._get_provider_chain()
@@ -862,9 +917,17 @@ class UniversalModelClient:
         first_error: ProviderError | None = None
         for i, provider in enumerate(chain):
             try:
-                res_text, prov_err = provider.generate_with_error(
-                    prompt, system=system, temperature=temperature
-                )
+                try:
+                    res_text, prov_err = provider.generate_with_error(
+                        prompt, system=system, temperature=temperature, images=images
+                    )
+                except TypeError as type_err:
+                    if "images" in str(type_err):
+                        res_text, prov_err = provider.generate_with_error(
+                            prompt, system=system, temperature=temperature
+                        )
+                    else:
+                        raise
                 if prov_err:
                     attempts.append({
                         "provider": provider.name,
@@ -934,14 +997,14 @@ class UniversalModelClient:
         return res
 
     def generate_json(
-        self, prompt: str, system: str = "", temperature: float = 0.1
+        self, prompt: str, system: str = "", temperature: float = 0.1, images: list[str] | None = None
     ) -> JsonGenerationResult:
         """Generate structured JSON response with automatic cleanup, failover, and status tracking."""
         json_system = (
             (system + "\n\n" if system else "")
             + "IMPORTANT: You must return ONLY valid raw JSON with no markdown formatting, no code fences, and no preamble."
         )
-        gen_res = self.generate(prompt, system=json_system, temperature=temperature)
+        gen_res = self.generate(prompt, system=json_system, temperature=temperature, images=images)
         if gen_res.status == "provider_error":
             return JsonGenerationResult(
                 data=None,
@@ -1011,12 +1074,12 @@ class UniversalModelClient:
 CLIENT = UniversalModelClient()
 
 
-def generate(prompt: str, system: str = "", temperature: float = 0.1) -> GenerationResult:
-    return CLIENT.generate(prompt, system, temperature)
+def generate(prompt: str, system: str = "", temperature: float = 0.1, images: list[str] | None = None) -> GenerationResult:
+    return CLIENT.generate(prompt, system, temperature, images=images)
 
 
-def generate_json(prompt: str, system: str = "", temperature: float = 0.1) -> JsonGenerationResult:
-    return CLIENT.generate_json(prompt, system, temperature)
+def generate_json(prompt: str, system: str = "", temperature: float = 0.1, images: list[str] | None = None) -> JsonGenerationResult:
+    return CLIENT.generate_json(prompt, system, temperature, images=images)
 
 
 def complete(system: str, user: str) -> str | None:

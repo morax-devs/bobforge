@@ -1,6 +1,7 @@
 import type { HealthInfo, RunRecord, Template } from "./types";
 
-const API_BASE = import.meta.env.VITE_API_URL || "/api";
+const rawBase = (import.meta.env.VITE_API_URL || "/api").trim();
+const API_BASE = rawBase === "/api" || rawBase.endsWith("/api") ? rawBase : `${rawBase.replace(/\/+$/, "")}/api`;
 
 async function parse<T>(response: Response): Promise<T> {
   if (!response.ok) {
